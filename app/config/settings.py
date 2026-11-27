@@ -17,6 +17,7 @@ class AISettings:
     max_image_bytes: int = 4 * 1024 * 1024
     skip_processed: bool = True
     min_interval_seconds: float = 0.2
+    parallel_requests: int = 20
     def limits(self) -> AnalysisLimits: return AnalysisLimits(self.max_images, self.max_requests, self.max_budget_usd, self.max_image_bytes, self.skip_processed, self.min_interval_seconds)
 
 def load_settings(path: Path) -> AISettings:

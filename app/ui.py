@@ -22,7 +22,7 @@ except ImportError:
 if QApplication is not None:
     class ScanWorker(QThread):
         found, finished, error = Signal(object), Signal(), Signal(str)
-        def __init__(self, roots, database_path, ai_manager, api_keys: list[str] | None = None): super().__init__(); self.roots, self.database_path, self.ai_manager, self.api_keys = roots, Path(database_path), ai_manager, api_keys or []; self.repository = None; self.skip_processed = getattr(ai_manager.limits, "skip_processed", True)
+        def __init__(self, roots, database_path, ai_manager, api_keys: list[str] | None = None, parallel_requests: int = 20): super().__init__(); self.roots, self.database_path, self.ai_manager, self.api_keys, self.parallel_requests = roots, Path(database_path), ai_manager, api_keys or [], max(1, min(200, parallel_requests)); self.repository = None; self.skip_processed = getattr(ai_manager.limits, "skip_processed", True)
         def run(self):
             self.repository = None
             try:
@@ -53,7 +53,7 @@ if QApplication is not None:
                 if self.repository is not None:
                     self.repository.close()
         def _process_batch(self, batch, keys_list):
-            max_workers = 100
+            max_workers = min(self.parallel_requests, len(batch))
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 pending = {executor.submit(self._process_record, record, key): (record_id, record) for record_id, record, key in batch}
                 for future in as_completed(pending):
@@ -66,7 +66,9 @@ if QApplication is not None:
                             self.ai_manager.spent_usd += manager.spent_usd
                         self.repository.save_analysis(record, result); self.found.emit((record_id, record, result))
                     except AIProviderError as exc:
-                        self.error.emit(f"Файл {record.path.name}: {exc}"); continue
+                        if "429" in str(exc): self.error.emit(f"Файл {record.path.name}: Превышен лимит запросов к API (429). Попробуйте позже или уменьшите количество параллельных запросов в настройках.")
+                        else: self.error.emit(f"Файл {record.path.name}: {exc}")
+                        continue
                     except (OSError, ValueError) as exc:
                         self.error.emit(f"Файл {record.path.name}: {exc}"); continue
         def _process_record(self, record, api_key):
@@ -79,7 +81,7 @@ if QApplication is not None:
 
     class MainWindow(QMainWindow):
         def __init__(self):
-            super().__init__(); self.setWindowTitle("Smart Photo Organizer"); self.resize(1100, 700); self.repository = Repository(Path("organizer.sqlite3")); self.records = []; self.worker = None; self.ai_settings_path = Path("ai_settings.json"); self.ai_settings = load_settings(self.ai_settings_path); self.keyring = KeyringStore(); self._build_ui(); self.ai_key.setPlaceholderText("Можно вставить несколько ключей через запятую")
+            super().__init__(); self.setWindowTitle("Smart Photo Organizer"); self.resize(1100, 700); self.repository = Repository(Path("organizer.sqlite3")); self.records = []; self.worker = None; self.ai_settings_path = Path("ai_settings.json"); self.ai_settings = load_settings(self.ai_settings_path); self.keyring = KeyringStore(); self._build_ui(); self.ai_key.setPlaceholderText("Можно вставить несколько ключей через запятую"); self.ai_parallel_requests = QSpinBox(); self.ai_parallel_requests.setRange(1, 200); self.ai_parallel_requests.setValue(self.ai_settings.parallel_requests); self.tabs.widget(2).layout().addRow("Параллельные запросы:", self.ai_parallel_requests)
         def _build_ui(self):
             root, layout = QWidget(), QVBoxLayout(); root.setLayout(layout); controls = QHBoxLayout(); self.source, self.destination = QLineEdit(), QLineEdit(); self.source.setPlaceholderText("Исходная папка"); self.destination.setPlaceholderText("Папка назначения")
             for field, text, handler in ((self.source, "Выбрать источник", self.choose_source), (self.destination, "Выбрать назначение", self.choose_destination)):
@@ -101,7 +103,10 @@ if QApplication is not None:
                 mode, config = self._ai_config(); manager = AIManager(mode, config, self.ai_settings.limits())
                 if mode != AnalysisMode.LOCAL and QMessageBox.question(self, "Облачный анализ", "Изображения будут отправлены выбранному провайдеру. Возможна дополнительная оплата. Продолжить?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes: return
             except (AIProviderError, SecureStorageError, OSError) as exc: QMessageBox.warning(self, "AI", str(exc)); return
-            keys_list = [key.strip() for key in config.api_key.replace(",", "\n").splitlines() if key.strip()]; self.records.clear(); self.table.setRowCount(0); self.progress.setRange(0, 0); self.status.setText("Сканирование и анализ…"); self.worker = ScanWorker([source], self.repository.database_path, manager, keys_list); self.worker.found.connect(self.add_result); self.worker.finished.connect(self.scan_finished); self.worker.error.connect(lambda error: QMessageBox.critical(self, "Ошибка", error)); self.worker.start()
+            keys_list = [key.strip() for key in config.api_key.replace(",", "\n").splitlines() if key.strip()]; self.records.clear(); self.table.setRowCount(0); self.progress.setRange(0, 0); self.status.setText("Сканирование и анализ…"); self.worker = ScanWorker([source], self.repository.database_path, manager, keys_list, self.ai_parallel_requests.value()); self.worker.found.connect(self.add_result); self.worker.finished.connect(self.scan_finished); self.worker.error.connect(self.handle_worker_error); self.worker.start()
+        def handle_worker_error(self, error):
+            if "429" in error: self.log.append(error)
+            else: QMessageBox.critical(self, "Ошибка", error)
         def scan_finished(self):
             stopped = self.worker is not None and self.worker.isInterruptionRequested()
             self.progress.setRange(0, 1); self.progress.setValue(1); self.status.setText("Остановлено пользователем" if stopped else f"Готово: {len(self.records)} изображений")
@@ -112,7 +117,7 @@ if QApplication is not None:
                 mode, config = self._ai_config(); keys_list = [key.strip() for key in config.api_key.replace(",", "\n").splitlines() if key.strip()]; check_config = ProviderConfig(config.provider_id, config.model, config.base_url, keys_list[0] if keys_list else "", config.timeout_seconds); AIManager(mode, check_config, self.ai_settings.limits()).check_connection(); QMessageBox.information(self, "AI", "Подключение успешно.")
             except (AIProviderError, SecureStorageError, OSError) as exc: QMessageBox.warning(self, "AI", str(exc))
         def save_ai_settings(self):
-            self.ai_settings = AISettings(["local", "cloud", "hybrid"][self.ai_mode.currentIndex()], self.ai_provider.currentText(), self.ai_model.text().strip(), self.ai_url.text().strip(), self.ai_max_images.value(), self.ai_max_requests.value(), self.ai_budget.value() or None)
+            self.ai_settings = AISettings(["local", "cloud", "hybrid"][self.ai_mode.currentIndex()], self.ai_provider.currentText(), self.ai_model.text().strip(), self.ai_url.text().strip(), self.ai_max_images.value(), self.ai_max_requests.value(), self.ai_budget.value() or None, parallel_requests=self.ai_parallel_requests.value())
             try:
                 if self.ai_key.text(): self.keyring.save(self.ai_provider.currentText(), self.ai_key.text()); self.ai_key.clear()
                 save_settings(self.ai_settings_path, self.ai_settings); QMessageBox.information(self, "AI", "Настройки сохранены. Секрет хранится только в Windows Credential Manager.")
