@@ -53,7 +53,7 @@ if QApplication is not None:
                 if self.repository is not None:
                     self.repository.close()
         def _process_batch(self, batch, keys_list):
-            max_workers = min(100, max(1, len(keys_list)))
+            max_workers = 100
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 pending = {executor.submit(self._process_record, record, key): (record_id, record) for record_id, record, key in batch}
                 for future in as_completed(pending):
