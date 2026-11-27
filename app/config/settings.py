@@ -19,12 +19,16 @@ class AISettings:
     min_interval_seconds: float = 0.2
     parallel_requests: int = 20
     provider_type: str = "openai"
+    openai_model: str = ""
+    openai_base_url: str = ""
+    gemini_model: str = "gemini-2.5-flash"
+    gemini_base_url: str = ""
     def limits(self) -> AnalysisLimits: return AnalysisLimits(self.max_images, self.max_requests, self.max_budget_usd, self.max_image_bytes, self.skip_processed, self.min_interval_seconds)
 
 def load_settings(path: Path) -> AISettings:
     if not path.exists(): return AISettings()
     try:
-        raw = json.loads(path.read_text(encoding="utf-8")); allowed = {field for field in AISettings.__dataclass_fields__}; return AISettings(**{key: value for key, value in raw.items() if key in allowed})
+        raw = json.loads(path.read_text(encoding="utf-8")); allowed = {field for field in AISettings.__dataclass_fields__}; values = {key: value for key, value in raw.items() if key in allowed}; values.setdefault("openai_model", raw.get("model", "")); values.setdefault("openai_base_url", raw.get("base_url", "")); return AISettings(**values)
     except (OSError, ValueError, TypeError): return AISettings()
 
 def save_settings(path: Path, settings: AISettings) -> None:
