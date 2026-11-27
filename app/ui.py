@@ -81,7 +81,7 @@ if QApplication is not None:
 
     class MainWindow(QMainWindow):
         def __init__(self):
-            super().__init__(); self.setWindowTitle("Smart Photo Organizer"); self.resize(1100, 700); self.repository = Repository(Path("organizer.sqlite3")); self.records = []; self.worker = None; self.ai_settings_path = Path("ai_settings.json"); self.ai_settings = load_settings(self.ai_settings_path); self.keyring = KeyringStore(); self._build_ui(); self.ai_key.setPlaceholderText("Можно вставить несколько ключей через запятую"); self.ai_parallel_requests = QSpinBox(); self.ai_parallel_requests.setRange(1, 200); self.ai_parallel_requests.setValue(self.ai_settings.parallel_requests); self.tabs.widget(2).layout().addRow("Параллельные запросы:", self.ai_parallel_requests)
+            super().__init__(); self.setWindowTitle("Smart Photo Organizer"); self.resize(1100, 700); self.repository = Repository(Path("organizer.sqlite3")); self.records = []; self.worker = None; self.ai_settings_path = Path("ai_settings.json"); self.ai_settings = load_settings(self.ai_settings_path); self.keyring = KeyringStore(); self._build_ui(); self.ai_key.setPlaceholderText("Можно вставить несколько ключей через запятую"); self.ai_provider_type = QComboBox(); self.ai_provider_type.addItem("OpenAI / Compatible (OpenRouter)", "openai"); self.ai_provider_type.addItem("Google Gemini", "gemini"); self.ai_provider_type.setCurrentIndex(1 if self.ai_settings.provider_type == "gemini" else 0); self.ai_provider_type.currentIndexChanged.connect(lambda: self.ai_url.setPlaceholderText("Для Gemini не используется" if self.ai_provider_type.currentData() == "gemini" else "https://api.openai.com/v1")); self.ai_parallel_requests = QSpinBox(); self.ai_parallel_requests.setRange(1, 200); self.ai_parallel_requests.setValue(self.ai_settings.parallel_requests); self.tabs.widget(2).layout().addRow("Тип провайдера:", self.ai_provider_type); self.tabs.widget(2).layout().addRow("Параллельные запросы:", self.ai_parallel_requests); self.ai_provider_type.currentIndexChanged.emit(self.ai_provider_type.currentIndex())
         def _build_ui(self):
             root, layout = QWidget(), QVBoxLayout(); root.setLayout(layout); controls = QHBoxLayout(); self.source, self.destination = QLineEdit(), QLineEdit(); self.source.setPlaceholderText("Исходная папка"); self.destination.setPlaceholderText("Папка назначения")
             for field, text, handler in ((self.source, "Выбрать источник", self.choose_source), (self.destination, "Выбрать назначение", self.choose_destination)):
@@ -111,19 +111,20 @@ if QApplication is not None:
             stopped = self.worker is not None and self.worker.isInterruptionRequested()
             self.progress.setRange(0, 1); self.progress.setValue(1); self.status.setText("Остановлено пользователем" if stopped else f"Готово: {len(self.records)} изображений")
         def _ai_config(self):
-            mode = [AnalysisMode.LOCAL, AnalysisMode.CLOUD, AnalysisMode.HYBRID][self.ai_mode.currentIndex()]; key = self.keyring.get(self.ai_provider.currentText()) or self.ai_key.text().strip(); config = ProviderConfig(self.ai_provider.currentText(), self.ai_model.text().strip(), self.ai_url.text().strip(), key); return mode, config
+            mode = [AnalysisMode.LOCAL, AnalysisMode.CLOUD, AnalysisMode.HYBRID][self.ai_mode.currentIndex()]; provider_id = "gemini" if self.ai_provider_type.currentData() == "gemini" else self.ai_provider.currentText(); key = self.keyring.get(provider_id) or self.ai_key.text().strip(); config = ProviderConfig(provider_id, self.ai_model.text().strip(), self.ai_url.text().strip(), key); return mode, config
         def check_ai_connection(self):
             try:
                 mode, config = self._ai_config(); keys_list = [key.strip() for key in config.api_key.replace(",", "\n").splitlines() if key.strip()]; check_config = ProviderConfig(config.provider_id, config.model, config.base_url, keys_list[0] if keys_list else "", config.timeout_seconds); AIManager(mode, check_config, self.ai_settings.limits()).check_connection(); QMessageBox.information(self, "AI", "Подключение успешно.")
             except (AIProviderError, SecureStorageError, OSError) as exc: QMessageBox.warning(self, "AI", str(exc))
         def save_ai_settings(self):
-            self.ai_settings = AISettings(["local", "cloud", "hybrid"][self.ai_mode.currentIndex()], self.ai_provider.currentText(), self.ai_model.text().strip(), self.ai_url.text().strip(), self.ai_max_images.value(), self.ai_max_requests.value(), self.ai_budget.value() or None, parallel_requests=self.ai_parallel_requests.value())
+            self.ai_settings = AISettings(["local", "cloud", "hybrid"][self.ai_mode.currentIndex()], self.ai_provider.currentText(), self.ai_model.text().strip(), self.ai_url.text().strip(), self.ai_max_images.value(), self.ai_max_requests.value(), self.ai_budget.value() or None, parallel_requests=self.ai_parallel_requests.value(), provider_type=self.ai_provider_type.currentData())
             try:
-                if self.ai_key.text(): self.keyring.save(self.ai_provider.currentText(), self.ai_key.text()); self.ai_key.clear()
+                provider_id = "gemini" if self.ai_provider_type.currentData() == "gemini" else self.ai_provider.currentText()
+                if self.ai_key.text(): self.keyring.save(provider_id, self.ai_key.text()); self.ai_key.clear()
                 save_settings(self.ai_settings_path, self.ai_settings); QMessageBox.information(self, "AI", "Настройки сохранены. Секрет хранится только в Windows Credential Manager.")
             except SecureStorageError as exc: QMessageBox.warning(self, "Безопасность", str(exc))
         def delete_ai_key(self):
-            try: self.keyring.delete(self.ai_provider.currentText()); self.ai_key.clear(); QMessageBox.information(self, "AI", "Ключ удалён из защищённого хранилища.")
+            try: self.keyring.delete("gemini" if self.ai_provider_type.currentData() == "gemini" else self.ai_provider.currentText()); self.ai_key.clear(); QMessageBox.information(self, "AI", "Ключ удалён из защищённого хранилища.")
             except SecureStorageError as exc: QMessageBox.warning(self, "Безопасность", str(exc))
         def add_result(self, item):
             record_id, record, result = item; self.records.append((record, result)); row = self.table.rowCount(); self.table.insertRow(row); values = [record_id, record.path.name, result.category, result.subcategory, result.source, f"{result.confidence:.0%}", "На проверку" if result.confidence < 0.60 else "Готово"]

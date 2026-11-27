@@ -18,6 +18,7 @@ class AISettings:
     skip_processed: bool = True
     min_interval_seconds: float = 0.2
     parallel_requests: int = 20
+    provider_type: str = "openai"
     def limits(self) -> AnalysisLimits: return AnalysisLimits(self.max_images, self.max_requests, self.max_budget_usd, self.max_image_bytes, self.skip_processed, self.min_interval_seconds)
 
 def load_settings(path: Path) -> AISettings:

@@ -5,6 +5,7 @@ from enum import StrEnum
 from pathlib import Path
 from app.ai.base import AIProvider, AIProviderError, ProviderConfig
 from app.ai.compatible_provider import OpenAICompatibleProvider
+from app.ai.gemini_provider import GeminiProvider
 from app.ai.local_provider import LocalProvider
 from app.ai.openai_provider import OpenAIProvider
 from app.ai.http import RequestLimiter
@@ -26,7 +27,8 @@ class AIManager:
         if mode != AnalysisMode.LOCAL:
             if config is None: raise AIProviderError("Для облачного режима не настроен провайдер.")
             limiter = RequestLimiter(self.limits.min_interval_seconds, self.limits.max_requests)
-            self.provider = OpenAIProvider(config, limiter) if config.provider_id == "openai" else OpenAICompatibleProvider(config, limiter)
+            if config.provider_id == "gemini": self.provider = GeminiProvider(config, limiter)
+            else: self.provider = OpenAIProvider(config, limiter) if config.provider_id == "openai" else OpenAICompatibleProvider(config, limiter)
     def check_connection(self) -> str: return self.provider.check_connection()
     def analyze(self, image_path: Path, prompt: str) -> dict:
         if self.images_analyzed >= self.limits.max_images: raise AIProviderError("Достигнут лимит изображений для текущей сессии.")
