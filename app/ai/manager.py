@@ -21,7 +21,7 @@ class AnalysisLimits:
 
 class AIManager:
     def __init__(self, mode: AnalysisMode, config: ProviderConfig | None = None, limits: AnalysisLimits | None = None):
-        self.mode, self.limits, self.requests = mode, limits or AnalysisLimits(), 0
+        self.mode, self.limits, self.requests, self.images_analyzed = mode, limits or AnalysisLimits(), 0, 0
         self.provider: AIProvider = LocalProvider(ProviderConfig("local", "baseline", ""))
         if mode != AnalysisMode.LOCAL:
             if config is None: raise AIProviderError("Для облачного режима не настроен провайдер.")
@@ -29,6 +29,7 @@ class AIManager:
             self.provider = OpenAIProvider(config, limiter) if config.provider_id == "openai" else OpenAICompatibleProvider(config, limiter)
     def check_connection(self) -> str: return self.provider.check_connection()
     def analyze(self, image_path: Path, prompt: str) -> dict:
+        if self.images_analyzed >= self.limits.max_images: raise AIProviderError("Достигнут лимит изображений для текущей сессии.")
         if self.requests >= self.limits.max_requests: raise AIProviderError("Достигнут лимит запросов.")
         if image_path.stat().st_size > self.limits.max_image_bytes: raise AIProviderError("Изображение превышает установленный лимит размера.")
-        response = self.provider.analyze_image(image_path, prompt); self.requests += response.request_count; return response.data
+        response = self.provider.analyze_image(image_path, prompt); self.requests += response.request_count; self.images_analyzed += 1; return response.data

@@ -7,7 +7,7 @@ import mimetypes
 from pathlib import Path
 
 from app.ai.base import AIProvider, AIProviderError, AnalysisResponse, ProviderConfig
-from app.ai.http import RequestLimiter, post_json
+from app.ai.http import RequestLimiter, get_json, post_json
 from app.ai.prompt import CLASSIFICATION_SCHEMA
 
 class OpenAIProvider(AIProvider):
@@ -17,12 +17,17 @@ class OpenAIProvider(AIProvider):
     def _url(self, suffix: str) -> str: return self.config.base_url.rstrip("/") + suffix
     def check_connection(self) -> str:
         if not self.config.api_key: raise AIProviderError("API-ключ не введён.")
-        result = post_json(self._url("/models"), {"Authorization": f"Bearer {self.config.api_key}"}, {}, self.config.timeout_seconds)
+        result = get_json(self._url("/models"), {"Authorization": f"Bearer {self.config.api_key}"}, self.config.timeout_seconds)
         models = {str(item.get("id")) for item in result.get("data", []) if isinstance(item, dict)}
         if self.config.model not in models and models: raise AIProviderError(f"Модель {self.config.model} недоступна для этого ключа.")
         return f"Подключение успешно. Модель: {self.config.model}"
     def analyze_image(self, image_path: Path, prompt: str) -> AnalysisResponse:
-        self.limiter.acquire(); encoded = base64.b64encode(image_path.read_bytes()).decode("ascii"); mime = mimetypes.guess_type(image_path.name)[0] or "image/jpeg"
+        self.limiter.acquire()
+        try:
+            encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
+        except OSError as exc:
+            raise AIProviderError(f"Не удалось прочитать изображение: {image_path.name}") from exc
+        mime = mimetypes.guess_type(image_path.name)[0] or "image/jpeg"
         payload = {"model": self.config.model, "input": [{"role": "user", "content": [{"type": "input_text", "text": prompt}, {"type": "input_image", "image_url": f"data:{mime};base64,{encoded}"}]}], "text": {"format": {"type": "json_schema", "name": "photo_classification", "strict": True, "schema": CLASSIFICATION_SCHEMA}}}
         result = post_json(self._url("/responses"), {"Authorization": f"Bearer {self.config.api_key}"}, payload, self.config.timeout_seconds)
         output_text = result.get("output_text") or ""
