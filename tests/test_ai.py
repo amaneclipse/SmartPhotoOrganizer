@@ -10,6 +10,7 @@ from app.ai.manager import AnalysisLimits
 from app.ai.compatible_provider import OpenAICompatibleProvider
 from app.ai.openai_provider import OpenAIProvider
 from app.ai.base import AnalysisResponse, ProviderConfig
+from app.ai.pricing import estimate_cost_usd
 from app.config.settings import AISettings, load_settings, save_settings
 
 
@@ -109,3 +110,38 @@ class TestAI(unittest.TestCase):
             with patch("pathlib.Path.read_bytes", side_effect=OSError("read failed")):
                 with self.assertRaisesRegex(AIProviderError, "Не удалось прочитать изображение"):
                     provider.analyze_image(image, "test")
+
+    def test_pricing_known_and_unknown_models(self):
+        self.assertEqual(estimate_cost_usd("gpt-4.1-mini", 1_000_000, 1_000_000), 2.0)
+        self.assertIsNone(estimate_cost_usd("unknown-model", 1_000_000, 1_000_000))
+        self.assertIsNone(estimate_cost_usd("gpt-4.1-mini", None, None))
+
+    @patch("app.ai.openai_provider.post_json")
+    def test_openai_provider_populates_estimated_cost(self, post_json):
+        post_json.return_value = {"output_text": '{"category": "Разное"}', "usage": {"input_tokens": 1_000_000, "output_tokens": 1_000_000}}
+        with tempfile.TemporaryDirectory() as directory:
+            image = Path(directory) / "image.jpg"; image.write_bytes(b"image")
+            provider = OpenAIProvider(ProviderConfig("openai", "gpt-4.1-mini", "https://example.test/v1", "test-key"))
+            response = provider.analyze_image(image, "test")
+        self.assertEqual(response.estimated_cost_usd, 2.0)
+
+    @patch("app.ai.compatible_provider.post_json")
+    def test_compatible_provider_populates_estimated_cost(self, post_json):
+        post_json.return_value = {"choices": [{"message": {"content": '{"category": "Разное"}'}}], "usage": {"prompt_tokens": 1_000_000, "completion_tokens": 1_000_000}}
+        with tempfile.TemporaryDirectory() as directory:
+            image = Path(directory) / "image.jpg"; image.write_bytes(b"image")
+            provider = OpenAICompatibleProvider(ProviderConfig("openai-compatible", "gpt-4.1-mini", "https://example.test/v1", "test-key"))
+            response = provider.analyze_image(image, "test")
+        self.assertEqual(response.estimated_cost_usd, 2.0)
+
+    def test_manager_accumulates_cost_and_blocks_at_budget(self):
+        with tempfile.TemporaryDirectory() as directory:
+            image = Path(directory) / "image.jpg"; image.write_bytes(b"image")
+            manager = AIManager(AnalysisMode.LOCAL, limits=AnalysisLimits(max_budget_usd=0.01))
+            manager.provider = MagicMock()
+            manager.provider.analyze_image.return_value = AnalysisResponse({}, estimated_cost_usd=0.01)
+            with self.assertRaises(AIProviderError): manager.analyze(image, "test")
+            self.assertEqual(manager.spent_usd, 0.01)
+            manager.provider.analyze_image.reset_mock()
+            with self.assertRaises(AIProviderError): manager.analyze(image, "test")
+            manager.provider.analyze_image.assert_not_called()

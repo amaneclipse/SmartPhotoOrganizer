@@ -8,6 +8,7 @@ from pathlib import Path
 
 from app.ai.base import AIProvider, AIProviderError, AnalysisResponse, ProviderConfig
 from app.ai.http import RequestLimiter, get_json, post_json
+from app.ai.pricing import estimate_cost_usd
 from app.ai.prompt import CLASSIFICATION_SCHEMA
 
 class OpenAIProvider(AIProvider):
@@ -37,4 +38,5 @@ class OpenAIProvider(AIProvider):
                     if content.get("type") in {"output_text", "text"}: output_text = content.get("text", ""); break
         try: data = json.loads(output_text)
         except (TypeError, json.JSONDecodeError) as exc: raise AIProviderError("Провайдер вернул некорректный структурированный результат.") from exc
-        usage = result.get("usage", {}); return AnalysisResponse(data, input_tokens=usage.get("input_tokens"), output_tokens=usage.get("output_tokens"))
+        usage = result.get("usage", {}); input_tokens, output_tokens = usage.get("input_tokens"), usage.get("output_tokens")
+        return AnalysisResponse(data, input_tokens=input_tokens, output_tokens=output_tokens, estimated_cost_usd=estimate_cost_usd(self.config.model, input_tokens, output_tokens))

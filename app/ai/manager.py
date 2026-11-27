@@ -21,7 +21,7 @@ class AnalysisLimits:
 
 class AIManager:
     def __init__(self, mode: AnalysisMode, config: ProviderConfig | None = None, limits: AnalysisLimits | None = None):
-        self.mode, self.limits, self.requests, self.images_analyzed = mode, limits or AnalysisLimits(), 0, 0
+        self.mode, self.limits, self.requests, self.images_analyzed, self.spent_usd = mode, limits or AnalysisLimits(), 0, 0, 0.0
         self.provider: AIProvider = LocalProvider(ProviderConfig("local", "baseline", ""))
         if mode != AnalysisMode.LOCAL:
             if config is None: raise AIProviderError("Для облачного режима не настроен провайдер.")
@@ -31,9 +31,17 @@ class AIManager:
     def analyze(self, image_path: Path, prompt: str) -> dict:
         if self.images_analyzed >= self.limits.max_images: raise AIProviderError("Достигнут лимит изображений для текущей сессии.")
         if self.requests >= self.limits.max_requests: raise AIProviderError("Достигнут лимит запросов.")
+        if self.limits.max_budget_usd is not None and self.spent_usd >= self.limits.max_budget_usd:
+            raise AIProviderError("Достигнут лимит бюджета.")
         try:
             image_size = image_path.stat().st_size
         except OSError as exc:
             raise AIProviderError(f"Не удалось прочитать изображение: {image_path.name}") from exc
         if image_size > self.limits.max_image_bytes: raise AIProviderError("Изображение превышает установленный лимит размера.")
-        response = self.provider.analyze_image(image_path, prompt); self.requests += response.request_count; self.images_analyzed += 1; return response.data
+        response = self.provider.analyze_image(image_path, prompt)
+        self.requests += response.request_count; self.images_analyzed += 1
+        if response.estimated_cost_usd is not None:
+            self.spent_usd += response.estimated_cost_usd
+            if self.limits.max_budget_usd is not None and self.spent_usd >= self.limits.max_budget_usd:
+                raise AIProviderError("Достигнут лимит бюджета.")
+        return response.data
