@@ -30,38 +30,45 @@ if QApplication is not None:
                 keys_list = [key.strip() for key in self.api_keys if key.strip()]
                 if not keys_list and self.ai_manager.mode != AnalysisMode.LOCAL:
                     keys_list = [self.ai_manager.provider.config.api_key]
-                with ThreadPoolExecutor(max_workers=max(1, len(keys_list))) as executor:
-                    pending = {}
-                    submitted_images = 0
-                    for index, record in enumerate(scan_images(self.roots, should_stop=self.isInterruptionRequested)):
-                        if self.isInterruptionRequested(): break
-                        try:
-                            if self.skip_processed and self.repository.is_analyzed(record.path): continue
-                            if self.ai_manager.mode != AnalysisMode.LOCAL and self.ai_manager.images_analyzed + submitted_images >= self.ai_manager.limits.max_images: break
-                            if self.ai_manager.mode != AnalysisMode.LOCAL and self.ai_manager.limits.max_budget_usd is not None and self.ai_manager.spent_usd >= self.ai_manager.limits.max_budget_usd: break
-                            key = keys_list[index % len(keys_list)] if keys_list else ""
-                            pending[executor.submit(self._process_record, record, key)] = record
-                            submitted_images += 1
-                        except (OSError, ValueError) as exc:
-                            self.error.emit(f"Файл {record.path.name}: {exc}"); continue
-                    for future in as_completed(pending):
-                        record = pending[future]
-                        try:
-                            result, manager = future.result()
-                            if manager is not None:
-                                self.ai_manager.requests += manager.requests
-                                self.ai_manager.images_analyzed += manager.images_analyzed
-                                self.ai_manager.spent_usd += manager.spent_usd
-                            self.repository.save_analysis(record, result); self.found.emit((record, result))
-                        except AIProviderError as exc:
-                            self.error.emit(f"Файл {record.path.name}: {exc}"); continue
-                        except (OSError, ValueError) as exc:
-                            self.error.emit(f"Файл {record.path.name}: {exc}"); continue
+                batch = []
+                submitted_images = 0
+                for record in scan_images(self.roots, should_stop=self.isInterruptionRequested):
+                    if self.isInterruptionRequested(): break
+                    try:
+                        if self.skip_processed and self.repository.is_analyzed(record.path): continue
+                        if self.ai_manager.mode != AnalysisMode.LOCAL and self.ai_manager.images_analyzed + submitted_images >= self.ai_manager.limits.max_images: break
+                        if self.ai_manager.mode != AnalysisMode.LOCAL and self.ai_manager.limits.max_budget_usd is not None and self.ai_manager.spent_usd >= self.ai_manager.limits.max_budget_usd: break
+                        record_id = submitted_images
+                        key = keys_list[record_id % len(keys_list)] if keys_list else ""
+                        batch.append((record_id, record, key)); submitted_images += 1
+                        if len(batch) == 100:
+                            self._process_batch(batch, keys_list); batch = []
+                    except (OSError, ValueError) as exc:
+                        self.error.emit(f"Файл {record.path.name}: {exc}"); continue
+                if batch:
+                    self._process_batch(batch, keys_list)
                 self.finished.emit()
             except Exception as exc: self.error.emit(str(exc))
             finally:
                 if self.repository is not None:
                     self.repository.close()
+        def _process_batch(self, batch, keys_list):
+            max_workers = min(100, max(1, len(keys_list)))
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                pending = {executor.submit(self._process_record, record, key): (record_id, record) for record_id, record, key in batch}
+                for future in as_completed(pending):
+                    record_id, record = pending[future]
+                    try:
+                        result, manager = future.result()
+                        if manager is not None:
+                            self.ai_manager.requests += manager.requests
+                            self.ai_manager.images_analyzed += manager.images_analyzed
+                            self.ai_manager.spent_usd += manager.spent_usd
+                        self.repository.save_analysis(record, result); self.found.emit((record_id, record, result))
+                    except AIProviderError as exc:
+                        self.error.emit(f"Файл {record.path.name}: {exc}"); continue
+                    except (OSError, ValueError) as exc:
+                        self.error.emit(f"Файл {record.path.name}: {exc}"); continue
         def _process_record(self, record, api_key):
             result = classify(record); manager = None
             if self.ai_manager.mode == AnalysisMode.CLOUD or (self.ai_manager.mode == AnalysisMode.HYBRID and result.confidence < 0.60):
@@ -80,7 +87,7 @@ if QApplication is not None:
             layout.addLayout(controls); actions = QHBoxLayout()
             for label, handler in (("Сканировать и анализировать", self.scan), ("Предварительный просмотр", self.preview), ("Начать копирование", self.copy_files), ("Остановить", self.stop)):
                 button = QPushButton(label); button.clicked.connect(handler); actions.addWidget(button)
-            layout.addLayout(actions); self.progress = QProgressBar(); layout.addWidget(self.progress); self.status = QLabel("Готово. Локальный режим не требует API-ключа."); layout.addWidget(self.status); self.tabs = QTabWidget(); self.table = QTableWidget(0, 6); self.table.setHorizontalHeaderLabels(["Файл", "Категория", "Подкатегория", "Источник", "Уверенность", "Статус"]); self.tabs.addTab(self.table, "Результаты"); self.log = QTextEdit(); self.log.setReadOnly(True); self.tabs.addTab(self.log, "Журнал"); self.tabs.addTab(self._build_ai_tab(), "Настройки → Искусственный интеллект"); layout.addWidget(self.tabs); self.setCentralWidget(root)
+            layout.addLayout(actions); self.progress = QProgressBar(); layout.addWidget(self.progress); self.status = QLabel("Готово. Локальный режим не требует API-ключа."); layout.addWidget(self.status); self.tabs = QTabWidget(); self.table = QTableWidget(0, 7); self.table.setHorizontalHeaderLabels(["ID", "Файл", "Категория", "Подкатегория", "Источник", "Уверенность", "Статус"]); self.tabs.addTab(self.table, "Результаты"); self.log = QTextEdit(); self.log.setReadOnly(True); self.tabs.addTab(self.log, "Журнал"); self.tabs.addTab(self._build_ai_tab(), "Настройки → Искусственный интеллект"); layout.addWidget(self.tabs); self.setCentralWidget(root)
         def _build_ai_tab(self):
             tab, form = QWidget(), QFormLayout(); self.ai_mode = QComboBox(); self.ai_mode.addItems(["Локальный режим", "Облачный режим", "Гибридный режим"]); self.ai_mode.setCurrentIndex({"local": 0, "cloud": 1, "hybrid": 2}.get(self.ai_settings.mode, 0)); self.ai_provider = QComboBox(); self.ai_provider.addItems(["openai", "openai-compatible"]); self.ai_provider.setCurrentText(self.ai_settings.provider_id); self.ai_model = QLineEdit(self.ai_settings.model); self.ai_url = QLineEdit(self.ai_settings.base_url); self.ai_key = QLineEdit(); self.ai_key.setEchoMode(QLineEdit.EchoMode.Password); self.ai_show_key = QCheckBox("Показать ключ"); self.ai_show_key.toggled.connect(lambda checked: self.ai_key.setEchoMode(QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password)); self.ai_max_images = QSpinBox(); self.ai_max_images.setRange(1, 1000000); self.ai_max_images.setValue(self.ai_settings.max_images); self.ai_max_requests = QSpinBox(); self.ai_max_requests.setRange(1, 1000000); self.ai_max_requests.setValue(self.ai_settings.max_requests); self.ai_budget = QDoubleSpinBox(); self.ai_budget.setRange(0, 1000000); self.ai_budget.setSpecialValueText("Не ограничивать"); self.ai_budget.setValue(self.ai_settings.max_budget_usd or 0); form.addRow("Режим:", self.ai_mode); form.addRow("Провайдер:", self.ai_provider); form.addRow("Модель:", self.ai_model); form.addRow("Base URL:", self.ai_url); form.addRow("API-ключ:", self.ai_key); form.addRow("", self.ai_show_key); form.addRow("Макс. изображений:", self.ai_max_images); form.addRow("Макс. запросов:", self.ai_max_requests); form.addRow("Бюджет USD:", self.ai_budget); buttons = QHBoxLayout(); check = QPushButton("Проверить подключение"); check.clicked.connect(self.check_ai_connection); save = QPushButton("Сохранить настройки"); save.clicked.connect(self.save_ai_settings); delete = QPushButton("Удалить ключ"); delete.clicked.connect(self.delete_ai_key); buttons.addWidget(check); buttons.addWidget(save); buttons.addWidget(delete); form.addRow(buttons); warning = QLabel("Облачный режим отправляет выбранные изображения провайдеру. Проверьте его условия обработки данных и конфиденциальности."); warning.setWordWrap(True); form.addRow(warning); tab.setLayout(form); return tab
         def choose_source(self):
@@ -114,7 +121,7 @@ if QApplication is not None:
             try: self.keyring.delete(self.ai_provider.currentText()); self.ai_key.clear(); QMessageBox.information(self, "AI", "Ключ удалён из защищённого хранилища.")
             except SecureStorageError as exc: QMessageBox.warning(self, "Безопасность", str(exc))
         def add_result(self, item):
-            self.records.append(item); record, result = item; row = self.table.rowCount(); self.table.insertRow(row); values = [record.path.name, result.category, result.subcategory, result.source, f"{result.confidence:.0%}", "На проверку" if result.confidence < 0.60 else "Готово"]
+            record_id, record, result = item; self.records.append((record, result)); row = self.table.rowCount(); self.table.insertRow(row); values = [record_id, record.path.name, result.category, result.subcategory, result.source, f"{result.confidence:.0%}", "На проверку" if result.confidence < 0.60 else "Готово"]
             for column, value in enumerate(values): self.table.setItem(row, column, QTableWidgetItem(str(value)))
         def make_plan(self, root): return [SortPlanItem(record.path, root / (REVIEW_ROOT if result.confidence < 0.60 else result.category) / result.subcategory / result.source / record.path.name, result) for record, result in self.records]
         def preview(self):

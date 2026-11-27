@@ -2,6 +2,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
+from PIL import Image
 
 from app.ai.base import AIProviderError
 from app.ai.http import RequestLimiter, RetryPolicy, request_json
@@ -120,7 +121,7 @@ class TestAI(unittest.TestCase):
     def test_openai_provider_populates_estimated_cost(self, post_json):
         post_json.return_value = {"output_text": '{"category": "Разное"}', "usage": {"input_tokens": 1_000_000, "output_tokens": 1_000_000}}
         with tempfile.TemporaryDirectory() as directory:
-            image = Path(directory) / "image.jpg"; image.write_bytes(b"image")
+            image = Path(directory) / "image.jpg"; Image.new("RGB", (1, 1), "white").save(image, format="JPEG")
             provider = OpenAIProvider(ProviderConfig("openai", "gpt-4.1-mini", "https://example.test/v1", "test-key"))
             response = provider.analyze_image(image, "test")
         self.assertEqual(response.estimated_cost_usd, 2.0)
@@ -129,7 +130,7 @@ class TestAI(unittest.TestCase):
     def test_compatible_provider_populates_estimated_cost(self, post_json):
         post_json.return_value = {"choices": [{"message": {"content": '{"category": "Разное"}'}}], "usage": {"prompt_tokens": 1_000_000, "completion_tokens": 1_000_000}}
         with tempfile.TemporaryDirectory() as directory:
-            image = Path(directory) / "image.jpg"; image.write_bytes(b"image")
+            image = Path(directory) / "image.jpg"; Image.new("RGB", (1, 1), "white").save(image, format="JPEG")
             provider = OpenAICompatibleProvider(ProviderConfig("openai-compatible", "gpt-4.1-mini", "https://example.test/v1", "test-key"))
             response = provider.analyze_image(image, "test")
         self.assertEqual(response.estimated_cost_usd, 2.0)
@@ -185,7 +186,7 @@ class TestAI(unittest.TestCase):
     def test_openai_provider_fills_estimated_cost(self, post_json):
         post_json.return_value = {"choices": [{"message": {"content": '{"category": "test"}'}}], "output_text": '{"category": "test"}', "usage": {"input_tokens": 1000, "output_tokens": 500}}
         with tempfile.TemporaryDirectory() as directory:
-            image = Path(directory) / "image.jpg"; image.write_bytes(b"image")
+            image = Path(directory) / "image.jpg"; Image.new("RGB", (1, 1), "white").save(image, format="JPEG")
             provider = OpenAIProvider(ProviderConfig("openai", "gpt-4o", "https://example.test/v1", "test-key"))
             response = provider.analyze_image(image, "prompt")
         self.assertEqual(response.input_tokens, 1000)

@@ -2,11 +2,15 @@
 from __future__ import annotations
 
 import json
+import io
 import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
+
+from PIL import Image
 
 from app.ai.base import AIProviderError
 
@@ -27,6 +31,18 @@ class RetryPolicy:
 
 
 TRANSIENT_HTTP_CODES = frozenset({408, 425, 429, 500, 502, 503, 504})
+
+
+def prepare_image_for_ai(path: Path) -> bytes:
+    """Return a resized JPEG copy for remote analysis without changing the source."""
+    source = path.read_bytes()
+    with Image.open(io.BytesIO(source)) as image:
+        image.thumbnail((512, 512), Image.Resampling.LANCZOS)
+        if image.mode not in {"RGB", "L"}:
+            image = image.convert("RGB")
+        buffer = io.BytesIO()
+        image.save(buffer, format="JPEG", quality=50)
+        return buffer.getvalue()
 
 
 def request_json(

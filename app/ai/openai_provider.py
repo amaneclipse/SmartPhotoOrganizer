@@ -3,11 +3,10 @@ from __future__ import annotations
 
 import base64
 import json
-import mimetypes
 from pathlib import Path
 
 from app.ai.base import AIProvider, AIProviderError, AnalysisResponse, ProviderConfig
-from app.ai.http import RequestLimiter, get_json, post_json
+from app.ai.http import RequestLimiter, get_json, post_json, prepare_image_for_ai
 from app.ai.pricing import estimate_cost_usd
 from app.ai.prompt import CLASSIFICATION_SCHEMA
 
@@ -25,10 +24,10 @@ class OpenAIProvider(AIProvider):
     def analyze_image(self, image_path: Path, prompt: str) -> AnalysisResponse:
         self.limiter.acquire()
         try:
-            encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
-        except OSError as exc:
+            encoded = base64.b64encode(prepare_image_for_ai(image_path)).decode("ascii")
+        except (OSError, ValueError) as exc:
             raise AIProviderError(f"Не удалось прочитать изображение: {image_path.name}") from exc
-        mime = mimetypes.guess_type(image_path.name)[0] or "image/jpeg"
+        mime = "image/jpeg"
         payload = {"model": self.config.model, "input": [{"role": "user", "content": [{"type": "input_text", "text": prompt}, {"type": "input_image", "image_url": f"data:{mime};base64,{encoded}"}]}], "text": {"format": {"type": "json_schema", "name": "photo_classification", "strict": True, "schema": CLASSIFICATION_SCHEMA}}}
         result = post_json(self._url("/responses"), {"Authorization": f"Bearer {self.config.api_key}"}, payload, self.config.timeout_seconds)
         output_text = result.get("output_text") or ""
