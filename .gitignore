@@ -108,6 +108,8 @@ sorted_images/
 output/
 exports/
 reports/
+test_photo/
+test_output/
 
 # IDE / OS
 .idea/
