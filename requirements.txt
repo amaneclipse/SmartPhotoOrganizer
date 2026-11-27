@@ -1,0 +1,10 @@
+PySide6>=6.7
+Pillow>=10.0
+imagehash>=4.3
+keyring>=25.0
+pyinstaller>=6.10
+pytest>=8.0
+# Optional local ML/OCR adapters for future stages:
+# onnxruntime>=1.18
+# open_clip_torch>=2.24
+# paddleocr>=2.7
