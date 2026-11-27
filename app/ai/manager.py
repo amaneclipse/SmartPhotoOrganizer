@@ -32,7 +32,7 @@ class AIManager:
         if self.images_analyzed >= self.limits.max_images: raise AIProviderError("Достигнут лимит изображений для текущей сессии.")
         if self.requests >= self.limits.max_requests: raise AIProviderError("Достигнут лимит запросов.")
         if self.limits.max_budget_usd is not None and self.spent_usd >= self.limits.max_budget_usd:
-            raise AIProviderError("Достигнут лимит бюджета.")
+            raise AIProviderError(f"Достигнут лимит бюджета: потрачено ${self.spent_usd:.4f} из ${self.limits.max_budget_usd:.2f}.")
         try:
             image_size = image_path.stat().st_size
         except OSError as exc:
@@ -42,6 +42,6 @@ class AIManager:
         self.requests += response.request_count; self.images_analyzed += 1
         if response.estimated_cost_usd is not None:
             self.spent_usd += response.estimated_cost_usd
-            if self.limits.max_budget_usd is not None and self.spent_usd >= self.limits.max_budget_usd:
-                raise AIProviderError("Достигнут лимит бюджета.")
+            if self.limits.max_budget_usd is not None and self.spent_usd > self.limits.max_budget_usd:
+                raise AIProviderError(f"Превышен лимит бюджета: потрачено ${self.spent_usd:.4f} из ${self.limits.max_budget_usd:.2f}. Анализ остановлен.")
         return response.data

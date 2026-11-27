@@ -134,17 +134,28 @@ class TestAI(unittest.TestCase):
             response = provider.analyze_image(image, "test")
         self.assertEqual(response.estimated_cost_usd, 2.0)
 
-    def test_manager_accumulates_cost_and_blocks_at_budget(self):
+    def test_manager_accumulates_cost_and_blocks_after_exceeding_budget(self):
         with tempfile.TemporaryDirectory() as directory:
             image = Path(directory) / "image.jpg"; image.write_bytes(b"image")
             manager = AIManager(AnalysisMode.LOCAL, limits=AnalysisLimits(max_budget_usd=0.01))
             manager.provider = MagicMock()
-            manager.provider.analyze_image.return_value = AnalysisResponse({}, estimated_cost_usd=0.01)
+            manager.provider.analyze_image.return_value = AnalysisResponse({}, estimated_cost_usd=0.02)
             with self.assertRaises(AIProviderError): manager.analyze(image, "test")
-            self.assertEqual(manager.spent_usd, 0.01)
+            self.assertEqual(manager.spent_usd, 0.02)
             manager.provider.analyze_image.reset_mock()
             with self.assertRaises(AIProviderError): manager.analyze(image, "test")
             manager.provider.analyze_image.assert_not_called()
+
+    def test_budget_exact_limit_does_not_raise(self):
+        with tempfile.TemporaryDirectory() as directory:
+            image = Path(directory) / "image.jpg"; image.write_bytes(b"image")
+            manager = AIManager(AnalysisMode.LOCAL, limits=AnalysisLimits(max_budget_usd=0.01))
+            manager.provider = MagicMock()
+            manager.provider.analyze_image.return_value = AnalysisResponse({}, request_count=1, estimated_cost_usd=0.01)
+            manager.analyze(image, "test")
+            self.assertEqual(manager.spent_usd, 0.01)
+            with self.assertRaises(AIProviderError): manager.analyze(image, "test")
+            manager.provider.analyze_image.assert_called_once()
 
     def test_budget_none_means_unlimited(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -177,4 +188,6 @@ class TestAI(unittest.TestCase):
             image = Path(directory) / "image.jpg"; image.write_bytes(b"image")
             provider = OpenAIProvider(ProviderConfig("openai", "gpt-4o", "https://example.test/v1", "test-key"))
             response = provider.analyze_image(image, "prompt")
+        self.assertEqual(response.input_tokens, 1000)
+        self.assertEqual(response.output_tokens, 500)
         self.assertEqual(response.estimated_cost_usd, (1000 * 2.5 + 500 * 10) / 1_000_000)
