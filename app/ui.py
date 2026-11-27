@@ -1,6 +1,7 @@
 """PySide6 desktop interface for the MVP."""
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import sys
+import sqlite3
 from pathlib import Path
 from app.classifiers.rule_based import classify
 from app.config.categories import REVIEW_ROOT
@@ -32,13 +33,18 @@ if QApplication is not None:
                     keys_list = [self.ai_manager.provider.config.api_key]
                 batch = []
                 submitted_images = 0
+                result_id = 0
                 for record in scan_images(self.roots, should_stop=self.isInterruptionRequested):
                     if self.isInterruptionRequested(): break
                     try:
                         if self.skip_processed and self.repository.is_analyzed(record.path): continue
+                        record_id = result_id; result_id += 1
+                        if self.skip_processed:
+                            cached_result = self.repository.get_analysis(record.path)
+                            if cached_result is not None:
+                                self.found.emit((record_id, record, cached_result)); continue
                         if self.ai_manager.mode != AnalysisMode.LOCAL and self.ai_manager.images_analyzed + submitted_images >= self.ai_manager.limits.max_images: break
                         if self.ai_manager.mode != AnalysisMode.LOCAL and self.ai_manager.limits.max_budget_usd is not None and self.ai_manager.spent_usd >= self.ai_manager.limits.max_budget_usd: break
-                        record_id = submitted_images
                         key = keys_list[record_id % len(keys_list)] if keys_list else ""
                         batch.append((record_id, record, key)); submitted_images += 1
                         if len(batch) == 100:
@@ -81,7 +87,7 @@ if QApplication is not None:
 
     class MainWindow(QMainWindow):
         def __init__(self):
-            super().__init__(); self.setWindowTitle("Smart Photo Organizer"); self.resize(1100, 700); self.repository = Repository(Path("organizer.sqlite3")); self.records = []; self.worker = None; self.ai_settings_path = Path("ai_settings.json"); self.ai_settings = load_settings(self.ai_settings_path); self.keyring = KeyringStore(); self._build_ui(); self.ai_key.setPlaceholderText("Можно вставить несколько ключей через запятую"); self.ai_provider_type = QComboBox(); self.ai_provider_type.addItem("OpenAI / Compatible (OpenRouter)", "openai"); self.ai_provider_type.addItem("Google Gemini", "gemini"); self._active_provider_type = "gemini" if self.ai_settings.provider_type == "gemini" else "openai"; self.ai_provider_type.setCurrentIndex(1 if self._active_provider_type == "gemini" else 0); self.ai_provider_type.currentTextChanged.connect(self._provider_type_changed); self.ai_parallel_requests = QSpinBox(); self.ai_parallel_requests.setRange(1, 200); self.ai_parallel_requests.setValue(self.ai_settings.parallel_requests); self.tabs.widget(2).layout().addRow("Тип провайдера:", self.ai_provider_type); self.tabs.widget(2).layout().addRow("Параллельные запросы:", self.ai_parallel_requests); self._load_provider_settings(self._active_provider_type)
+            super().__init__(); self.setWindowTitle("Smart Photo Organizer"); self.resize(1100, 700); self.repository = Repository(Path("organizer.sqlite3")); self.records = []; self.worker = None; self.ai_settings_path = Path("ai_settings.json"); self.ai_settings = load_settings(self.ai_settings_path); self.keyring = KeyringStore(); self._build_ui(); self.ai_key.setPlaceholderText("Можно вставить несколько ключей через запятую"); self.ai_provider_type = QComboBox(); self.ai_provider_type.addItem("OpenAI / Compatible (OpenRouter)", "openai"); self.ai_provider_type.addItem("Google Gemini", "gemini"); self._active_provider_type = "gemini" if self.ai_settings.provider_type == "gemini" else "openai"; self.ai_provider_type.setCurrentIndex(1 if self._active_provider_type == "gemini" else 0); self.ai_provider_type.currentTextChanged.connect(self._provider_type_changed); self.ai_parallel_requests = QSpinBox(); self.ai_parallel_requests.setRange(1, 200); self.ai_parallel_requests.setValue(self.ai_settings.parallel_requests); self.reset_cache_button = QPushButton("Сбросить кэш (БД)"); self.reset_cache_button.clicked.connect(self.reset_cache); self.tabs.widget(2).layout().addRow("Тип провайдера:", self.ai_provider_type); self.tabs.widget(2).layout().addRow("Параллельные запросы:", self.ai_parallel_requests); self.tabs.widget(2).layout().addRow(self.reset_cache_button); self._load_provider_settings(self._active_provider_type)
         def _build_ui(self):
             root, layout = QWidget(), QVBoxLayout(); root.setLayout(layout); controls = QHBoxLayout(); self.source, self.destination = QLineEdit(), QLineEdit(); self.source.setPlaceholderText("Исходная папка"); self.destination.setPlaceholderText("Папка назначения")
             for field, text, handler in ((self.source, "Выбрать источник", self.choose_source), (self.destination, "Выбрать назначение", self.choose_destination)):
@@ -105,7 +111,7 @@ if QApplication is not None:
             except (AIProviderError, SecureStorageError, OSError) as exc: QMessageBox.warning(self, "AI", str(exc)); return
             keys_list = [key.strip() for key in config.api_key.replace(",", "\n").splitlines() if key.strip()]; self.records.clear(); self.table.setRowCount(0); self.progress.setRange(0, 0); self.status.setText("Сканирование и анализ…"); self.worker = ScanWorker([source], self.repository.database_path, manager, keys_list, self.ai_parallel_requests.value()); self.worker.found.connect(self.add_result); self.worker.finished.connect(self.scan_finished); self.worker.error.connect(self.handle_worker_error); self.worker.start()
         def handle_worker_error(self, error):
-            if "429" in error: self.log.append(error)
+            if "429" in error or "Доступные модели:" in error: self.log.append(error)
             else: QMessageBox.critical(self, "Ошибка", error)
         def _remember_provider_settings(self, provider_type):
             if provider_type == "gemini": self.ai_settings.gemini_model, self.ai_settings.gemini_base_url = self.ai_model.text().strip(), self.ai_url.text().strip()
@@ -124,7 +130,9 @@ if QApplication is not None:
         def check_ai_connection(self):
             try:
                 mode, config = self._ai_config(); keys_list = [key.strip() for key in config.api_key.replace(",", "\n").splitlines() if key.strip()]; check_config = ProviderConfig(config.provider_id, config.model, config.base_url, keys_list[0] if keys_list else "", config.timeout_seconds); AIManager(mode, check_config, self.ai_settings.limits()).check_connection(); QMessageBox.information(self, "AI", "Подключение успешно.")
-            except (AIProviderError, SecureStorageError, OSError) as exc: QMessageBox.warning(self, "AI", str(exc))
+            except (AIProviderError, SecureStorageError, OSError) as exc:
+                if "Доступные модели:" in str(exc): self.log.append(str(exc))
+                else: QMessageBox.warning(self, "AI", str(exc))
         def save_ai_settings(self):
             provider_type = self.ai_provider_type.currentData(); self._remember_provider_settings(provider_type); self.ai_settings.mode = ["local", "cloud", "hybrid"][self.ai_mode.currentIndex()]; self.ai_settings.provider_id = self.ai_provider.currentText(); self.ai_settings.model = self.ai_model.text().strip(); self.ai_settings.base_url = self.ai_url.text().strip(); self.ai_settings.max_images = self.ai_max_images.value(); self.ai_settings.max_requests = self.ai_max_requests.value(); self.ai_settings.max_budget_usd = self.ai_budget.value() or None; self.ai_settings.parallel_requests = self.ai_parallel_requests.value(); self.ai_settings.provider_type = provider_type
             try:
@@ -147,6 +155,11 @@ if QApplication is not None:
             root = Path(self.destination.text().strip() or "Фотоархив")
             if QMessageBox.question(self, "Подтверждение", f"Скопировать {len(self.records)} файлов в {root}? Оригиналы останутся на месте.") != QMessageBox.StandardButton.Yes: return
             plan = self.make_plan(root); self.progress.setRange(0, len(plan)); execute_plan(plan, self.repository, progress=lambda index, item: self.progress.setValue(index)); done = sum(item.status == "done" for item in plan); self.status.setText(f"Завершено: {done}, ошибок: {len(plan) - done}"); self.log.append(f"Копирование завершено: {done} успешно, {len(plan) - done} ошибок.")
+        def reset_cache(self):
+            if QMessageBox.question(self, "Сброс кэша", "Это удалит историю анализа. Уже скопированные файлы останутся на месте. Продолжить?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes: return
+            try:
+                self.repository.clear_all(); self.records.clear(); self.table.setRowCount(0); self.status.setText("Кэш очищен")
+            except (OSError, sqlite3.Error) as exc: QMessageBox.warning(self, "Сброс кэша", str(exc))
         def stop(self):
             if self.worker and self.worker.isRunning(): self.worker.requestInterruption()
             self.status.setText("Остановка запрошена…")

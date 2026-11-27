@@ -18,18 +18,41 @@ class GeminiProvider(AIProvider):
         super().__init__(config)
         self.limiter = limiter or RequestLimiter(0.2)
 
+    def _model_name(self) -> str:
+        model = self.config.model.strip()
+        return model.rsplit("/", 1)[-1]
+
     def _url(self, suffix: str = "") -> str:
-        model = quote(self.config.model, safe="")
-        return f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.config.api_key}" if suffix == "/generateContent" else f"https://generativelanguage.googleapis.com/v1beta/models{suffix}?key={self.config.api_key}"
+        """Build the native Gemini Developer API v1beta URL.
+
+        The native API is global by hostname and does not use a
+        ``locations/global`` path. That path belongs to Vertex AI, which
+        requires a project and OAuth credentials rather than an API key.
+        """
+        model = quote(self._model_name(), safe="")
+        root = "https://generativelanguage.googleapis.com/v1beta"
+        return f"{root}/models/{model}:generateContent?key={self.config.api_key}" if suffix == "/generateContent" else f"{root}/models{suffix}?key={self.config.api_key}"
+
+    def _available_models(self) -> list[str]:
+        try:
+            result = get_json(self._url(""), {}, self.config.timeout_seconds)
+            return [str(item["name"]).rsplit("/", 1)[-1] for item in result.get("models", []) if isinstance(item, dict) and item.get("name")]
+        except (AIProviderError, OSError, ValueError, TypeError):
+            return []
+
+    def _model_error(self) -> AIProviderError:
+        models = self._available_models()
+        available = ", ".join(models) if models else "список недоступен"
+        return AIProviderError(f"Модель {self._model_name()} не найдена в Google Gemini. Доступные модели: {available}.")
 
     def check_connection(self) -> str:
         if not self.config.api_key:
             raise AIProviderError("API-ключ не введён.")
         result = get_json(self._url(""), {}, self.config.timeout_seconds)
         models = {str(item.get("name", "")).rsplit("/", 1)[-1] for item in result.get("models", []) if isinstance(item, dict)}
-        if models and self.config.model not in models:
-            raise AIProviderError(f"Модель {self.config.model} недоступна для Google Gemini.")
-        return f"Подключение успешно. Модель: {self.config.model}"
+        if models and self._model_name() not in models:
+            raise self._model_error()
+        return f"Подключение успешно. Модель: {self._model_name()}"
 
     def analyze_image(self, image_path: Path, prompt: str) -> AnalysisResponse:
         self.limiter.acquire()
@@ -41,7 +64,11 @@ class GeminiProvider(AIProvider):
             "contents": [{"role": "user", "parts": [{"text": prompt}, {"inline_data": {"mime_type": "image/jpeg", "data": encoded}}]}],
             "generationConfig": {"responseMimeType": "application/json"},
         }
-        result = post_json(self._url("/generateContent"), {}, payload, self.config.timeout_seconds)
+        try:
+            result = post_json(self._url("/generateContent"), {}, payload, self.config.timeout_seconds)
+        except AIProviderError as exc:
+            if "(404)" in str(exc): raise self._model_error() from exc
+            raise
         try:
             output_text = result["candidates"][0]["content"]["parts"][0]["text"]
             data = json.loads(output_text)

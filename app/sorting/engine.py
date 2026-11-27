@@ -19,7 +19,7 @@ def execute_plan(plan: list[SortPlanItem], repository: Repository, move: bool = 
             item.destination.parent.mkdir(parents=True, exist_ok=True); target = unique_destination(item.destination)
             if move: shutil.move(str(item.source), str(target)); item.action = "move"
             else: shutil.copy2(item.source, target); item.action = "copy"
-            item.destination, item.status = target, "done"; repository.log_operation(item.source, target, item.action, item.status)
+            item.destination, item.status = target, "done"; repository.log_operation(item.source, target, item.action, item.status); repository.mark_copied(item.source)
         except (OSError, shutil.Error) as exc:
             item.status, item.error = "error", str(exc); repository.log_operation(item.source, item.destination, item.action, item.status, item.error)
         if progress: progress(index, item)
