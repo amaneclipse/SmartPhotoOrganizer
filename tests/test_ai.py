@@ -145,3 +145,36 @@ class TestAI(unittest.TestCase):
             manager.provider.analyze_image.reset_mock()
             with self.assertRaises(AIProviderError): manager.analyze(image, "test")
             manager.provider.analyze_image.assert_not_called()
+
+    def test_budget_none_means_unlimited(self):
+        with tempfile.TemporaryDirectory() as directory:
+            image = Path(directory) / "image.jpg"; image.write_bytes(b"image")
+            manager = AIManager(AnalysisMode.LOCAL, limits=AnalysisLimits(max_budget_usd=None))
+            manager.provider = MagicMock()
+            manager.provider.analyze_image.return_value = AnalysisResponse({}, request_count=1, estimated_cost_usd=999.0)
+            manager.analyze(image, "test")
+            self.assertEqual(manager.spent_usd, 999.0)
+
+    def test_budget_ignores_unknown_cost(self):
+        with tempfile.TemporaryDirectory() as directory:
+            image = Path(directory) / "image.jpg"; image.write_bytes(b"image")
+            manager = AIManager(AnalysisMode.LOCAL, limits=AnalysisLimits(max_budget_usd=0.001))
+            manager.provider = MagicMock()
+            manager.provider.analyze_image.return_value = AnalysisResponse({}, request_count=1, estimated_cost_usd=None)
+            manager.analyze(image, "test")
+            self.assertEqual(manager.spent_usd, 0.0)
+
+    def test_estimate_cost_usd_known_model(self):
+        self.assertEqual(estimate_cost_usd("gpt-4o", 1000, 500), (1000 * 2.5 + 500 * 10) / 1_000_000)
+
+    def test_estimate_cost_usd_unknown_model(self):
+        self.assertIsNone(estimate_cost_usd("unknown-model", 1000, 500))
+
+    @patch("app.ai.openai_provider.post_json")
+    def test_openai_provider_fills_estimated_cost(self, post_json):
+        post_json.return_value = {"choices": [{"message": {"content": '{"category": "test"}'}}], "output_text": '{"category": "test"}', "usage": {"input_tokens": 1000, "output_tokens": 500}}
+        with tempfile.TemporaryDirectory() as directory:
+            image = Path(directory) / "image.jpg"; image.write_bytes(b"image")
+            provider = OpenAIProvider(ProviderConfig("openai", "gpt-4o", "https://example.test/v1", "test-key"))
+            response = provider.analyze_image(image, "prompt")
+        self.assertEqual(response.estimated_cost_usd, (1000 * 2.5 + 500 * 10) / 1_000_000)
