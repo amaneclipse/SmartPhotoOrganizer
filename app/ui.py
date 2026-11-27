@@ -21,14 +21,21 @@ except ImportError:
 if QApplication is not None:
     class ScanWorker(QThread):
         found, finished, error = Signal(object), Signal(), Signal(str)
-        def __init__(self, roots, repository, ai_manager): super().__init__(); self.roots, self.repository, self.ai_manager = roots, repository, ai_manager
+        def __init__(self, roots, repository, ai_manager): super().__init__(); self.roots, self.repository, self.ai_manager = roots, repository, ai_manager; self.skip_processed = getattr(ai_manager.limits, "skip_processed", True)
         def run(self):
             try:
-                for record in scan_images(self.roots):
-                    result = classify(record)
-                    if self.ai_manager.mode == AnalysisMode.CLOUD or (self.ai_manager.mode == AnalysisMode.HYBRID and result.confidence < 0.60):
-                        remote = self.ai_manager.analyze(record.path, CLASSIFICATION_PROMPT); result = ClassificationResult(str(remote.get("category", "Разное")), str(remote.get("subcategory", "Неопределённая категория")), str(remote.get("source", "Неизвестный источник")), float(remote.get("confidence", 0.0)), list(remote.get("tags", [])), bool(remote.get("is_screenshot", False)), str(remote.get("screenshot_kind", "")), str(remote.get("text", "")), result.orientation, "Результат выбранного AI-провайдера")
-                    self.repository.save_analysis(record, result); self.found.emit((record, result))
+                for record in scan_images(self.roots, should_stop=self.isInterruptionRequested):
+                    if self.isInterruptionRequested(): break
+                    try:
+                        if self.skip_processed and self.repository.is_analyzed(record.path): continue
+                        result = classify(record)
+                        if self.ai_manager.mode == AnalysisMode.CLOUD or (self.ai_manager.mode == AnalysisMode.HYBRID and result.confidence < 0.60):
+                            remote = self.ai_manager.analyze(record.path, CLASSIFICATION_PROMPT); result = ClassificationResult(str(remote.get("category", "Разное")), str(remote.get("subcategory", "Неопределённая категория")), str(remote.get("source", "Неизвестный источник")), float(remote.get("confidence", 0.0)), list(remote.get("tags", [])), bool(remote.get("is_screenshot", False)), str(remote.get("screenshot_kind", "")), str(remote.get("text", "")), result.orientation, "Результат выбранного AI-провайдера")
+                        self.repository.save_analysis(record, result); self.found.emit((record, result))
+                    except AIProviderError as exc:
+                        self.error.emit(f"Файл {record.path.name}: {exc}"); continue
+                    except (OSError, ValueError) as exc:
+                        self.error.emit(f"Файл {record.path.name}: {exc}"); continue
                 self.finished.emit()
             except Exception as exc: self.error.emit(str(exc))
 
@@ -56,7 +63,10 @@ if QApplication is not None:
                 mode, config = self._ai_config(); manager = AIManager(mode, config, self.ai_settings.limits())
                 if mode != AnalysisMode.LOCAL and QMessageBox.question(self, "Облачный анализ", "Изображения будут отправлены выбранному провайдеру. Возможна дополнительная оплата. Продолжить?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes: return
             except (AIProviderError, SecureStorageError, OSError) as exc: QMessageBox.warning(self, "AI", str(exc)); return
-            self.records.clear(); self.table.setRowCount(0); self.progress.setRange(0, 0); self.status.setText("Сканирование и анализ…"); self.worker = ScanWorker([source], self.repository, manager); self.worker.found.connect(self.add_result); self.worker.finished.connect(lambda: (self.progress.setRange(0, 1), self.progress.setValue(1), self.status.setText(f"Готово: {len(self.records)} изображений"))); self.worker.error.connect(lambda error: QMessageBox.critical(self, "Ошибка", error)); self.worker.start()
+            self.records.clear(); self.table.setRowCount(0); self.progress.setRange(0, 0); self.status.setText("Сканирование и анализ…"); self.worker = ScanWorker([source], self.repository, manager); self.worker.found.connect(self.add_result); self.worker.finished.connect(self.scan_finished); self.worker.error.connect(lambda error: QMessageBox.critical(self, "Ошибка", error)); self.worker.start()
+        def scan_finished(self):
+            stopped = self.worker is not None and self.worker.isInterruptionRequested()
+            self.progress.setRange(0, 1); self.progress.setValue(1); self.status.setText("Остановлено пользователем" if stopped else f"Готово: {len(self.records)} изображений")
         def _ai_config(self):
             mode = [AnalysisMode.LOCAL, AnalysisMode.CLOUD, AnalysisMode.HYBRID][self.ai_mode.currentIndex()]; key = self.keyring.get(self.ai_provider.currentText()) or self.ai_key.text().strip(); config = ProviderConfig(self.ai_provider.currentText(), self.ai_model.text().strip(), self.ai_url.text().strip(), key); return mode, config
         def check_ai_connection(self):
