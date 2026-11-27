@@ -18,7 +18,7 @@ class OpenAIProvider(AIProvider):
     def check_connection(self) -> str:
         if not self.config.api_key: raise AIProviderError("API-ключ не введён.")
         result = get_json(self._url("/models"), {"Authorization": f"Bearer {self.config.api_key}"}, self.config.timeout_seconds)
-        models = {str(item.get("id")) for item in result.get("data", []) if isinstance(item, dict)}
+        models = {str(item.get("id")) for item in (result.get("data") or []) if isinstance(item, dict)}
         if self.config.model not in models and models: raise AIProviderError(f"Модель {self.config.model} недоступна для этого ключа.")
         return f"Подключение успешно. Модель: {self.config.model}"
     def analyze_image(self, image_path: Path, prompt: str) -> AnalysisResponse:

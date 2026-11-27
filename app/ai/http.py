@@ -39,8 +39,8 @@ def request_json(
 ) -> dict[str, Any]:
     """Make a JSON request without exposing response bodies or credentials.
 
-    Only transient failures are retried. Authentication, validation and other
-    permanent 4xx responses fail immediately.
+    Only transient failures are retried. JSONDecodeError, authentication,
+    validation and other permanent 4xx responses fail immediately.
     """
     policy = retry_policy or RetryPolicy()
     request_headers = {**headers, "Accept": "application/json"}
@@ -69,13 +69,12 @@ def request_json(
             except ValueError:
                 delay = policy.initial_delay_seconds * (2**attempt)
             time.sleep(min(delay, policy.max_delay_seconds))
-        except (urllib.error.URLError, TimeoutError, OSError, UnicodeDecodeError) as exc:
+        except (urllib.error.URLError, OSError, UnicodeDecodeError) as exc:
             if attempt >= policy.max_retries:
                 raise AIProviderError("Не удалось подключиться к выбранному AI-провайдеру. Повторите попытку позже.") from exc
             time.sleep(min(policy.initial_delay_seconds * (2**attempt), policy.max_delay_seconds))
         except json.JSONDecodeError as exc:
             raise AIProviderError("Провайдер вернул некорректный JSON-ответ.") from exc
-    raise AIProviderError("Не удалось получить ответ от AI-провайдера.")
 
 
 def get_json(url: str, headers: dict[str, str], timeout: float, retry_policy: RetryPolicy | None = None) -> dict[str, Any]:

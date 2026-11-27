@@ -31,5 +31,9 @@ class AIManager:
     def analyze(self, image_path: Path, prompt: str) -> dict:
         if self.images_analyzed >= self.limits.max_images: raise AIProviderError("Достигнут лимит изображений для текущей сессии.")
         if self.requests >= self.limits.max_requests: raise AIProviderError("Достигнут лимит запросов.")
-        if image_path.stat().st_size > self.limits.max_image_bytes: raise AIProviderError("Изображение превышает установленный лимит размера.")
+        try:
+            image_size = image_path.stat().st_size
+        except OSError as exc:
+            raise AIProviderError(f"Не удалось прочитать изображение: {image_path.name}") from exc
+        if image_size > self.limits.max_image_bytes: raise AIProviderError("Изображение превышает установленный лимит размера.")
         response = self.provider.analyze_image(image_path, prompt); self.requests += response.request_count; self.images_analyzed += 1; return response.data
