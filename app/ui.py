@@ -21,9 +21,11 @@ except ImportError:
 if QApplication is not None:
     class ScanWorker(QThread):
         found, finished, error = Signal(object), Signal(), Signal(str)
-        def __init__(self, roots, repository, ai_manager): super().__init__(); self.roots, self.repository, self.ai_manager = roots, repository, ai_manager; self.skip_processed = getattr(ai_manager.limits, "skip_processed", True)
+        def __init__(self, roots, database_path, ai_manager): super().__init__(); self.roots, self.database_path, self.ai_manager = roots, Path(database_path), ai_manager; self.repository = None; self.skip_processed = getattr(ai_manager.limits, "skip_processed", True)
         def run(self):
+            self.repository = None
             try:
+                self.repository = Repository(self.database_path)
                 for record in scan_images(self.roots, should_stop=self.isInterruptionRequested):
                     if self.isInterruptionRequested(): break
                     try:
@@ -38,6 +40,9 @@ if QApplication is not None:
                         self.error.emit(f"Файл {record.path.name}: {exc}"); continue
                 self.finished.emit()
             except Exception as exc: self.error.emit(str(exc))
+            finally:
+                if self.repository is not None:
+                    self.repository.close()
 
     class MainWindow(QMainWindow):
         def __init__(self):
@@ -63,7 +68,7 @@ if QApplication is not None:
                 mode, config = self._ai_config(); manager = AIManager(mode, config, self.ai_settings.limits())
                 if mode != AnalysisMode.LOCAL and QMessageBox.question(self, "Облачный анализ", "Изображения будут отправлены выбранному провайдеру. Возможна дополнительная оплата. Продолжить?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes: return
             except (AIProviderError, SecureStorageError, OSError) as exc: QMessageBox.warning(self, "AI", str(exc)); return
-            self.records.clear(); self.table.setRowCount(0); self.progress.setRange(0, 0); self.status.setText("Сканирование и анализ…"); self.worker = ScanWorker([source], self.repository, manager); self.worker.found.connect(self.add_result); self.worker.finished.connect(self.scan_finished); self.worker.error.connect(lambda error: QMessageBox.critical(self, "Ошибка", error)); self.worker.start()
+            self.records.clear(); self.table.setRowCount(0); self.progress.setRange(0, 0); self.status.setText("Сканирование и анализ…"); self.worker = ScanWorker([source], self.repository.database_path, manager); self.worker.found.connect(self.add_result); self.worker.finished.connect(self.scan_finished); self.worker.error.connect(lambda error: QMessageBox.critical(self, "Ошибка", error)); self.worker.start()
         def scan_finished(self):
             stopped = self.worker is not None and self.worker.isInterruptionRequested()
             self.progress.setRange(0, 1); self.progress.setValue(1); self.status.setText("Остановлено пользователем" if stopped else f"Готово: {len(self.records)} изображений")
